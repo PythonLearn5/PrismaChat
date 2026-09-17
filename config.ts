@@ -7,6 +7,7 @@ import type {
   ModelCatalogItem,
   CustomModel,
 } from '@/types';
+import { getVercelAIEnv } from '@/api';
 
 export const DEFAULT_MODEL: ModelOption | null = null;
 
@@ -234,7 +235,17 @@ export const getAllModels = (config: AppConfig): ModelCatalogItem[] => {
     provider: m.provider,
   }));
 
-  return customModels;
+  const vercel = getVercelAIEnv();
+  const vercelModels: ModelCatalogItem[] = vercel.enabled
+    ? vercel.models.map((m) => ({
+        value: m.id,
+        label: m.displayName || m.id,
+        desc: 'Vercel AI Gateway 模型',
+        provider: 'openai' as ApiProvider,
+      }))
+    : [];
+
+  return [...vercelModels, ...customModels];
 };
 
 export const getInitialSelectedModel = (

@@ -17,6 +17,7 @@ const ALLOWED_HOSTS = [
   'api.mistral.ai',
   'open.bigmodel.cn',
   'dashscope.aliyuncs.com',
+  'ai-gateway.vercel.sh',
 ];
 
 const ENABLE_PROXY_DEBUG = process.env.PRISMA_PROXY_DEBUG === 'true';

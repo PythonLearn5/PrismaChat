@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import type { ModelOption, OpenAIClient, ThinkingLevel } from '@/types';
 import { withRetry } from '@/services/utils/retry';
 import { getReasoningEffort } from '@/config';
+import { getVercelNormalizedModelId } from '@/api';
 
 export interface OpenAIStreamChunk {
   text: string;
@@ -118,6 +119,7 @@ export const generateContent = async (
   config: OpenAIConfig,
 ): Promise<{ text: string; thought?: string }> => {
   const messages: Array<OpenAI.Chat.ChatCompletionMessageParam> = [];
+  const normalizedModel = getVercelNormalizedModelId(config.model);
 
   if (config.systemInstruction) {
     messages.push({
@@ -132,7 +134,7 @@ export const generateContent = async (
   });
 
   const requestOptions: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
-    model: config.model,
+    model: normalizedModel,
     messages,
     temperature: config.temperature,
   };
@@ -186,6 +188,7 @@ export async function* generateContentStream(
   config: OpenAIConfig,
 ): AsyncGenerator<OpenAIStreamChunk, void, unknown> {
   const messages: Array<OpenAI.Chat.ChatCompletionMessageParam> = [];
+  const normalizedModel = getVercelNormalizedModelId(config.model);
 
   if (config.systemInstruction) {
     messages.push({
@@ -200,7 +203,7 @@ export async function* generateContentStream(
   });
 
   const requestOptions: OpenAI.Chat.ChatCompletionCreateParamsStreaming = {
-    model: config.model,
+    model: normalizedModel,
     messages,
     temperature: config.temperature,
     stream: true,

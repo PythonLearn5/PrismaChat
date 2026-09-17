@@ -13,16 +13,21 @@ import type {
 // --- Configuration & Types ---
 
 export type AIProviderConfig = {
-  provider?: ApiProvider;
+  provider: ApiProvider;
   apiKey?: string;
   baseUrl?: string;
+  targetBaseUrl?: string;
   proxyMode?: ApiProxyMode;
+  defaultHeaders?: Record<string, string>;
 };
 
 type ApiEnv = {
   VITE_API_KEY?: string;
   GEMINI_API_KEY?: string;
   VITE_API_PROXY_MODE?: string;
+  VITE_VERCEL_AI_API_KEY?: string;
+  VITE_VERCEL_AI_BASE_URL?: string;
+  VITE_VERCEL_AI_MODELS?: string;
 };
 
 type ApiProxyMode = 'direct' | 'local';
@@ -183,6 +188,76 @@ export const resolveApiProxyMode = (env: ApiEnv = import.meta.env): ApiProxyMode
   return env.VITE_API_PROXY_MODE === 'local' ? 'local' : 'direct';
 };
 
+const VERCEL_AI_DEFAULT_BASE_URL = 'https://ai-gateway.vercel.sh/v1';
+
+export const getVercelAIEnv = (env: ApiEnv = import.meta.env) => {
+  const apiKey = env.VITE_VERCEL_AI_API_KEY;
+  const upstreamBaseUrl = env.VITE_VERCEL_AI_BASE_URL || VERCEL_AI_DEFAULT_BASE_URL;
+  const modelsRaw = env.VITE_VERCEL_AI_MODELS;
+  const models: Array<{ id: string; name: string; displayName?: string }> = [];
+  if (modelsRaw) {
+    modelsRaw.split(',').forEach((entry) => {
+      const trimmed = entry.trim();
+      if (!trimmed) return;
+      const parts = trimmed.split('|');
+      const id = parts[0].trim();
+      const displayName = parts[1]?.trim() || undefined;
+      if (id) {
+        models.push({ id, name: id, displayName });
+      }
+    });
+  }
+
+  const isTestEnv =
+    (typeof import.meta !== 'undefined' &&
+      (typeof (import.meta as unknown as { vitest?: unknown }).vitest !== 'undefined' ||
+        import.meta.env?.MODE === 'test')) ||
+    (typeof process !== 'undefined' && process.env?.NODE_ENV === 'test');
+
+  const isBrowser = typeof window !== 'undefined';
+  const hasEnvConfig = Boolean(apiKey && !isTestEnv);
+
+  const baseUrl = upstreamBaseUrl;
+  const defaultHeaders: Record<string, string> | undefined = undefined;
+  const targetBaseUrl = isBrowser ? upstreamBaseUrl : undefined;
+
+  return { apiKey, baseUrl, targetBaseUrl, defaultHeaders, models, enabled: hasEnvConfig };
+};
+
+export const getVercelNormalizedModelId = (modelName: string): string => {
+  if (modelName.startsWith('vercel/')) {
+    return modelName.slice('vercel/'.length);
+  }
+  return modelName;
+};
+
+const getVercelModelConfig = (
+  modelName: string,
+  env: ApiEnv = import.meta.env,
+): {
+  apiKey: string;
+  baseUrl: string;
+  targetBaseUrl?: string;
+  defaultHeaders?: Record<string, string>;
+  normalizedModelId: string;
+} | null => {
+  const vercel = getVercelAIEnv(env);
+  if (!vercel.enabled) return null;
+  const isVercelModel =
+    modelName.startsWith('vercel/') ||
+    modelName.startsWith('vc-') ||
+    vercel.models.some((m) => m.id === modelName || m.name === modelName);
+  if (!isVercelModel) return null;
+  const normalizedModelId = getVercelNormalizedModelId(modelName);
+  return {
+    apiKey: vercel.apiKey!,
+    baseUrl: vercel.baseUrl,
+    targetBaseUrl: vercel.targetBaseUrl,
+    defaultHeaders: vercel.defaultHeaders,
+    normalizedModelId,
+  };
+};
+
 /**
  * Detect API provider from model name prefix.
  * Fallback when customModelConfig is unavailable.
@@ -201,6 +276,15 @@ export const getAIProvider = (model: string): ApiProvider => {
     'qwen-',
     'yi-',
     'glm-',
+    'vercel/',
+    'vc-',
+    'openai/',
+    'anthropic/',
+    'google/',
+    'xai/',
+    'cohere/',
+    'perplexity/',
+    'together/',
   ];
   if (openaiPrefixes.some((p) => model.startsWith(p))) return 'openai';
   if (model === 'custom') return 'openai';
@@ -214,10 +298,18 @@ export const resolveModelApiConfig = (
   const customModelConfig = findCustomModel(model, config.customModels);
   const provider = customModelConfig?.provider || getAIProvider(model);
 
+  const vercel = getVercelModelConfig(model);
+  const effectiveApiKey = customModelConfig?.apiKey ?? vercel?.apiKey;
+  const effectiveBaseUrl = customModelConfig?.baseUrl ?? vercel?.baseUrl;
+  const effectiveTargetBaseUrl = vercel?.targetBaseUrl;
+  const effectiveDefaultHeaders = vercel?.defaultHeaders;
+
   return {
     provider,
-    ...(customModelConfig?.apiKey ? { apiKey: customModelConfig.apiKey } : {}),
-    ...(customModelConfig?.baseUrl ? { baseUrl: customModelConfig.baseUrl } : {}),
+    ...(effectiveApiKey ? { apiKey: effectiveApiKey } : {}),
+    ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
+    ...(effectiveTargetBaseUrl ? { targetBaseUrl: effectiveTargetBaseUrl } : {}),
+    ...(effectiveDefaultHeaders ? { defaultHeaders: effectiveDefaultHeaders } : {}),
   };
 };
 
@@ -227,16 +319,26 @@ export const getAI = (config?: AIProviderConfig): AIClient => {
   const provider = config?.provider || 'google';
   const apiKey = resolveApiKey(config?.apiKey);
   const baseUrl = config?.baseUrl || null;
-  const proxyMode = config?.proxyMode || resolveApiProxyMode();
+  const explicitProxyMode = config?.proxyMode;
+  const baseProxyMode = resolveApiProxyMode();
+  const hasExternalTarget = Boolean(config?.targetBaseUrl);
+  const proxyMode: ApiProxyMode =
+    explicitProxyMode !== undefined
+      ? explicitProxyMode
+      : hasExternalTarget && typeof window !== 'undefined'
+        ? 'local'
+        : baseProxyMode;
   const customFetch = createCustomFetch(baseUrl, proxyMode);
 
   // Handle OpenAI-compatible providers
   if (provider === 'openai') {
+    const defaultHeaders = config?.defaultHeaders;
     const options: ConstructorParameters<typeof OpenAI>[0] = {
       apiKey: apiKey,
       dangerouslyAllowBrowser: true,
       fetch: customFetch,
       baseURL: baseUrl || 'https://api.openai.com/v1',
+      ...(defaultHeaders ? { defaultHeaders } : {}),
     };
 
     return new OpenAI(options) as unknown as OpenAIClient;
